@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request, Response
 import pymongo
-from pymongo.errors import ConnectionFailure, InvalidId
+from pymongo.errors import ConnectionFailure
+from bson.errors import InvalidId
 from bson import ObjectId
 from flask_cors import CORS
 import os
