@@ -105,34 +105,101 @@ def search_educators(keyword):
         limit = int(request.args.get('limit', 50))  # Default limit to 50
         skip = (page - 1) * limit
         
-        # Case-insensitive regex for keyword
-        regex = {'$regex': keyword, '$options': 'i'}
+        # Case-insensitive regex pattern
+        regex_pattern = {'$regex': keyword, '$options': 'i'}
         
-        # Query to match keyword in educator fields or nested courses/batches
-        query = {
-            '$or': [
-                {'first_name': regex},
-                {'last_name': regex},
-                {'username': regex},
-                {'courses.name': regex},
-                {'batches.name': regex}
-            ]
-        }
+        # Aggregation pipeline for accurate nested search
+        pipeline = [
+            # Match top-level fields
+            {
+                '$match': {
+                    '$or': [
+                        {'first_name': regex_pattern},
+                        {'last_name': regex_pattern},
+                        {'username': regex_pattern}
+                    ]
+                }
+            },
+            # Add flag for courses match
+            {
+                '$addFields': {
+                    'has_matching_course': {
+                        '$gt': [
+                            {
+                                '$size': {
+                                    '$filter': {
+                                        'input': '$courses',
+                                        'cond': {'$regexMatch': {'input': '$$this.name', 'regex': keyword, 'options': 'i'}}
+                                    }
+                                }
+                            },
+                            0
+                        ]
+                    }
+                }
+            },
+            # Add flag for batches match
+            {
+                '$addFields': {
+                    'has_matching_batch': {
+                        '$gt': [
+                            {
+                                '$size': {
+                                    '$filter': {
+                                        'input': '$batches',
+                                        'cond': {'$regexMatch': {'input': '$$this.name', 'regex': keyword, 'options': 'i'}}
+                                    }
+                                }
+                            },
+                            0
+                        ]
+                    }
+                }
+            },
+            # Final match: include if top-level match OR nested match
+            {
+                '$match': {
+                    '$or': [
+                        {'first_name': regex_pattern},
+                        {'last_name': regex_pattern},
+                        {'username': regex_pattern},
+                        {'has_matching_course': True},
+                        {'has_matching_batch': True}
+                    ]
+                }
+            },
+            # Project to remove temp fields
+            {
+                '$project': {
+                    'has_matching_course': 0,
+                    'has_matching_batch': 0
+                }
+            },
+            # Skip and limit for pagination
+            {'$skip': skip},
+            {'$limit': limit}
+        ]
         
-        # Fetch matching documents
-        cursor = educators_col.find(query).skip(skip).limit(limit)
+        # Run aggregation
+        cursor = educators_col.aggregate(pipeline)
         educators = list(cursor)
         
         # Convert _id to string, keep rest as raw
         for educator in educators:
             educator['_id'] = str(educator['_id'])
         
+        # Get total count (separate aggregation for count)
+        count_pipeline = pipeline[:-2]  # Remove skip/limit for count
+        count_pipeline.append({'$count': 'total'})
+        total_result = list(educators_col.aggregate(count_pipeline))
+        total = total_result[0]['total'] if total_result else 0
+        
         # Stream the response
         def generate_search_stream():
             yield '{\n'
             yield '"status": "success",\n'
             yield f'"count": {len(educators)},\n'
-            yield '"total": ' + str(educators_col.count_documents(query)) + ',\n'
+            yield f'"total": {total},\n'
             yield '"page": ' + str(page) + ',\n'
             yield '"limit": ' + str(limit) + ',\n'
             yield '"data": [\n'
